@@ -1,87 +1,157 @@
-from flask import Blueprint, request
+import os
+import time
+import re  # <--- Import Regex untuk validasi email
+from datetime import timedelta
+from flask import Blueprint, request, current_app
+from werkzeug.utils import secure_filename
+from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
+
 from app.models.user import User
 from app.extensions import db
-from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
-# Import helper respon kita
 from app.utils.response import success, error
-from datetime import timedelta
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
 
-# --- 1. REGISTER ---
+# --- CONFIG VALIDASI ---
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+EMAIL_REGEX = r'^[\w\.-]+@[\w\.-]+\.\w+$'
+
+# --- HELPER FUNCTIONS ---
+
+def allowed_file(filename):
+    """Cek ekstensi file gambar"""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def validate_register_input(data):
+    """Validasi ketat untuk registrasi"""
+    errors = []
+    
+    # 1. Validasi Email
+    email = data.get('email', '').strip()
+    if not email:
+        errors.append("Email wajib diisi.")
+    elif not re.match(EMAIL_REGEX, email):
+        errors.append("Format email tidak valid.")
+        
+    # 2. Validasi Password
+    password = data.get('password', '')
+    if not password:
+        errors.append("Password wajib diisi.")
+    elif len(password) < 8:
+        errors.append("Password minimal 6 karakter.")
+        
+    # 3. Validasi Nama Lengkap
+    full_name = data.get('full_name', '').strip()
+    if not full_name:
+        errors.append("Nama lengkap wajib diisi.")
+    elif len(full_name) < 3:
+        errors.append("Nama lengkap terlalu pendek (min 3 huruf).")
+    elif len(full_name) > 100:
+        errors.append("Nama lengkap terlalu panjang (max 100 huruf).")
+
+    # 4. Validasi Role
+    role = data.get('role', 'PASIEN')
+    if role not in ['PASIEN', 'DOKTER', 'ADMIN']:
+        errors.append("Role tidak valid.")
+
+    return errors
+
+# --- ROUTES ---
+
 @auth_bp.route('/register', methods=['POST'])
 def register():
     data = request.get_json()
-    
-    if not data or not data.get('email') or not data.get('password'):
-        return error("Email dan password wajib diisi", 400)
-    
-    if User.query.filter_by(email=data['email']).first():
-        return error("Email sudah terdaftar", 400)
-    
-    new_user = User(
-        email=data['email'],
-        full_name=data.get('full_name', 'User Tanpa Nama'),
-        role=data.get('role', 'PASIEN')
-    )
-    new_user.set_password(data['password'])
-    
-    db.session.add(new_user)
-    db.session.commit()
-    
-    # Return standar: Data user yang baru dibuat (kecuali password)
-    user_data = {
-        "email": new_user.email,
-        "full_name": new_user.full_name
-    }
-    
-    return success(user_data, "Registrasi berhasil", 201)
+    if not data:
+        return error("Tidak ada data yang dikirim", 400)
 
-# LOGIN 
+    # 1. Lakukan Validasi Input
+    validation_errors = validate_register_input(data)
+    if validation_errors:
+        # Mengembalikan error pertama yang ditemukan
+        return error(validation_errors[0], 400)
+    
+    # 2. Sanitasi Input (Bersihkan spasi)
+    email = data['email'].strip().lower()
+    full_name = data['full_name'].strip()
+    role = data.get('role', 'PASIEN')
+    
+    # 3. Cek Duplikasi Email di Database
+    if User.query.filter_by(email=email).first():
+        return error("Email sudah terdaftar, silakan login.", 400)
+    
+    # 4. Simpan ke Database
+    try:
+        new_user = User(
+            email=email,
+            full_name=full_name,
+            role=role
+        )
+        new_user.set_password(data['password'])
+        
+        db.session.add(new_user)
+        db.session.commit()
+        
+        user_data = {
+            "email": new_user.email,
+            "full_name": new_user.full_name,
+            "role": new_user.role
+        }
+        return success(user_data, "Registrasi berhasil", 201)
+        
+    except Exception as e:
+        db.session.rollback()
+        return error(f"Terjadi kesalahan server: {str(e)}", 500)
+
+
 @auth_bp.route('/login', methods=['POST'])
 def login():
-    # Kita asumsikan Login selalu pakai JSON (Standar)
     data = request.get_json()
-    
     if not data:
         return error("Data tidak valid", 400)
 
-    email = data.get('email')
-    password = data.get('password')
+    # Validasi dasar kehadiran data
+    email = data.get('email', '').strip().lower()
+    password = data.get('password', '')
     
-    # --- LOGIKA DETEKSI MOBILE ---
-    # Ambil parameter is_mobile, defaultnya False (Web) jika tidak dikirim
-    is_mobile = data.get('is_mobile', False)
+    if not email or not password:
+        return error("Email dan password wajib diisi", 400)
     
+    # Cek User
     user = User.query.filter_by(email=email).first()
     
     if user and user.check_password(password):
-        # --- TENTUKAN DURASI ---
-        if is_mobile:
-            expires = timedelta(days=30) # Mobile: 30 Hari
-            expire_msg = "30 Days"
-        else:
-            expires = timedelta(days=1)  # Web/Default: 1 Hari
-            expire_msg = "1 Day"
+        # Cek Verifikasi Dokter
+        if user.role == 'DOKTER' and not user.is_verified:
+            return error("Akun Anda sedang dalam proses verifikasi Admin.", 403)
+            
+        # Tentukan Durasi Token
+        is_mobile = data.get('is_mobile', False)
+        expires = timedelta(days=30) if is_mobile else timedelta(days=1)
+        expire_msg = "30 Days" if is_mobile else "1 Day"
 
-        # Buat token dengan durasi custom
         access_token = create_access_token(identity=str(user.id), expires_delta=expires)
         
+        # Buat URL Foto Profil jika ada
+        full_image_url = None
+        if user.profile_image:
+            full_image_url = request.host_url + user.profile_image
+
         login_data = {
             "token": access_token,
-            "expires_in": expire_msg, # Info tambahan biar enak dilihat saat testing
+            "expires_in": expire_msg,
             "user": {
                 "id": user.id,
                 "email": user.email,
                 "full_name": user.full_name,
-                "role": user.role
+                "role": user.role,
+                "profile_image": full_image_url
             }
         }
         return success(login_data, "Login berhasil")
     
     return error("Email atau password salah", 401)
 
-# CEK PROFILE 
+
 @auth_bp.route('/me', methods=['GET'])
 @jwt_required()
 def get_my_profile():
@@ -90,18 +160,27 @@ def get_my_profile():
     
     if not user:
         return error("User tidak ditemukan", 404)
+        
+    full_image_url = request.host_url + user.profile_image if user.profile_image else None
     
     profile_data = {
         "id": user.id,
         "email": user.email,
         "full_name": user.full_name,
         "role": user.role,
-        "joined_at": user.created_at
+        "joined_at": user.created_at,
+        "profile_image": full_image_url,
+        # Data Dokter (Akan null jika user biasa)
+        "specialization": user.specialization,
+        "consultation_price": user.consultation_price,
+        "is_online": user.is_online,
+        "bio": user.bio,
+        "is_verified": user.is_verified,
+        "balance": user.balance
     }
     
     return success(profile_data, "Berhasil mengambil data profil")
-# UPDATE PROFILE
-# ... (kode atas sama)
+
 
 @auth_bp.route('/profile', methods=['PUT'])
 @jwt_required()
@@ -112,49 +191,91 @@ def update_profile():
     if not user:
         return error("User tidak ditemukan", 404)
 
-    data = request.get_json()
+    # --- VALIDASI & SANITASI DATA ---
     
-    # 1. Update Data Umum (Semua Role)
-    if 'full_name' in data:
-        user.full_name = data['full_name']
+    # 1. Validasi Nama (Jika dikirim)
+    full_name = request.form.get('full_name')
+    if full_name is not None:
+        full_name = full_name.strip()
+        if len(full_name) < 3:
+            return error("Nama lengkap minimal 3 karakter", 400)
+        user.full_name = full_name
     
-    if 'password' in data:
-        if len(data['password']) < 6:
-            return error("Password minimal 6 karakter", 400)
-        user.set_password(data['password'])
+    # 2. Validasi Password (Jika dikirim)
+    password = request.form.get('password')
+    if password:
+        if len(password) < 6:
+            return error("Password baru minimal 6 karakter", 400)
+        user.set_password(password)
 
-    # 2. Update Data Khusus DOKTER
-    if user.role == 'DOKTER':
-        if 'specialization' in data:
-            user.specialization = data['specialization']
-        
-        if 'consultation_price' in data:
-            # Pastikan inputnya angka
-            try:
-                user.consultation_price = int(data['consultation_price'])
-            except:
-                return error("Harga harus berupa angka", 400)
-        
-        if 'bio' in data:
-            user.bio = data['bio']
+    # 3. Validasi & Handle Upload Gambar
+    if 'image' in request.files:
+        file = request.files['image']
+        if file.filename != '':
+            if not allowed_file(file.filename):
+                return error("Format file tidak diizinkan. Gunakan PNG, JPG, atau JPEG", 400)
             
-        if 'is_online' in data:
-            # Menangani input boolean true/false
-            user.is_online = bool(data['is_online'])
+            # Hapus foto lama
+            if user.profile_image:
+                old_path = os.path.join(current_app.config['BASE_DIR'], user.profile_image)
+                if os.path.exists(old_path):
+                    try:
+                        os.remove(old_path)
+                    except:
+                        pass # Abaikan jika gagal hapus file lama
+
+            # Simpan foto baru
+            filename = secure_filename(file.filename)
+            unique_filename = f"profile_{user.id}_{int(time.time())}_{filename}"
+            
+            upload_folder = current_app.config['UPLOAD_FOLDER']
+            if not os.path.exists(upload_folder):
+                os.makedirs(upload_folder)
+
+            file_path = os.path.join(upload_folder, unique_filename)
+            file.save(file_path)
+            
+            user.profile_image = f"static/uploads/{unique_filename}"
+
+    # 4. Validasi Khusus DOKTER
+    if user.role == 'DOKTER':
+        # Validasi Harga (Harus Angka & Tidak Negatif)
+        price_input = request.form.get('consultation_price')
+        if price_input:
+            try:
+                price = int(price_input)
+                if price < 0:
+                    return error("Harga konsultasi tidak boleh negatif", 400)
+                user.consultation_price = price
+            except ValueError:
+                return error("Harga konsultasi harus berupa angka", 400)
+        
+        # Update data string lainnya
+        if request.form.get('specialization'):
+            user.specialization = request.form.get('specialization').strip()
+        
+        if request.form.get('bio'):
+            user.bio = request.form.get('bio').strip()
+            
+        is_online_input = request.form.get('is_online')
+        if is_online_input:
+            user.is_online = is_online_input.lower() == 'true'
 
     try:
         db.session.commit()
         
-        # Kembalikan data terbaru (termasuk data dokter)
+        full_image_url = request.host_url + user.profile_image if user.profile_image else None
+
         updated_data = {
             "id": user.id,
             "email": user.email,
             "full_name": user.full_name,
             "role": user.role,
-            "specialization": user.specialization,   # Baru
-            "consultation_price": user.consultation_price, # Baru
-            "bio": user.bio,                         # Baru
-            "is_online": user.is_online              # Baru
+            "profile_image": full_image_url,
+            "specialization": user.specialization,
+            "consultation_price": user.consultation_price,
+            "bio": user.bio,
+            "is_online": user.is_online
         }
         return success(updated_data, "Profil berhasil diperbarui")
         

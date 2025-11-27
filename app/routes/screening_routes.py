@@ -115,3 +115,34 @@ def submit_screening():
         "score": round(final_score, 2),
         "symptoms": text_gejala
     }, "Skrining Selesai")
+
+@screening_bp.route('/history', methods=['GET'])
+@jwt_required()
+def get_my_screening_history():
+    current_user_id = get_jwt_identity()
+
+    # Ambil data record milik user yang sedang login
+    # Urutkan dari yang paling baru (descending)
+    records = MedicalRecord.query.filter_by(user_id=current_user_id)\
+        .order_by(MedicalRecord.created_at.desc()).all()
+
+    output = []
+    for rec in records:
+        # Generate Full URL untuk gambar (agar bisa diload di HP)
+        eye_url = request.host_url + rec.eye_image_path if rec.eye_image_path else None
+        nail_url = request.host_url + rec.nail_image_path if rec.nail_image_path else None
+
+        output.append({
+            "id": rec.id,
+            "hb_prediction": rec.hb_prediction,   # Kadar Hb
+            "risk_level": rec.risk_level,         # TINGGI/SEDANG/RENDAH
+            "final_score": rec.final_score,       # Skor 0-100
+            "symptoms_list": rec.symptoms_list,   # Text gejala
+            "images": {
+                "eye": eye_url,
+                "nail": nail_url
+            },
+            "created_at": rec.created_at
+        })
+
+    return success(output, "Berhasil mengambil riwayat skrining")

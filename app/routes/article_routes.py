@@ -8,7 +8,8 @@ from app.models.user import User
 from app.utils.response import success, error # <--- Import ini
 from sqlalchemy import or_
 
-article_bp = Blueprint('article', __name__, url_prefix='/api')
+article_bp = Blueprint('article_api', __name__, url_prefix='/api')
+
 
 # Fungsi bantuan cek ekstensi file
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
@@ -263,3 +264,30 @@ def delete_article(article_id):
     except Exception as e:
         db.session.rollback()
         return error(f"Gagal menghapus artikel: {str(e)}", 500)
+
+
+# --- 7. ROUTE TEST BROWSER (Public / No JWT) ---
+@article_bp.route('/', methods=['GET'])
+def get_articles_public_root():
+    # Query semua artikel, urutkan terbaru
+    articles = Article.query.order_by(Article.created_at.desc()).all()
+    
+    output = []
+    for art in articles:
+        # Buat link gambar full
+        full_image_url = request.host_url + art.image_url if art.image_url else None
+        
+        output.append({
+            "id": art.id,
+            "title": art.title,
+            # Kita potong konten biar tidak kepanjangan di browser
+            "content_preview": art.content[:200] + "...", 
+            "image": full_image_url,
+            "author": art.author.full_name if art.author else "Unknown",
+            "photo": request.host_url + art.author.profile_image if art.author.profile_image else None,
+            "tags": art.tags,
+            "created_at": art.created_at
+        })
+    
+    # Return JSON standar
+    return success(output, "Berhasil mengambil data artikel (Mode Browser/Public)")
