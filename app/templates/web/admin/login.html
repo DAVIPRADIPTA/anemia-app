@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Login Panel</title>
+</head>
+
+<body>
+  <h2>Login Panel Admin / Dokter</h2>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+  <ul>
+    {% for category, msg in messages %}
+    <li>[{{ category }}] {{ msg }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% endwith %}
+
+  <form method="POST">
+    <label>Email</label><br>
+    <input type="email" name="email" required><br><br>
+
+    <label>Password</label><br>
+    <input type="password" name="password" required><br><br>
+
+    <button type="submit">Logi</button>
+  </form>
+  <a href="{{ url_for('google_auth.google_login', role='ADMIN') }}" class="btn btn-danger w-100 mt-2">
+    <img src="https://developers.google.com/identity/images/g-logo.png" width="20">
+    Login dengan Google (Admin)
+  </a>
+
+</body>
+
+</html>

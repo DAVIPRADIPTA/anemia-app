@@ -282,3 +282,39 @@ def update_profile():
     except Exception as e:
         db.session.rollback()
         return error(f"Gagal update profil: {str(e)}", 500)
+
+@auth_bp.route('/verify-doc', methods=['PUT'])
+@jwt_required()
+def upload_verification_doc():
+    current_user_id = get_jwt_identity()
+    user = User.query.get(int(current_user_id))
+    
+    if not user:
+        return error("User tidak ditemukan", 404)
+
+    if user.role != "DOKTER":
+        return error("Hanya dokter yang bisa mengunggah dokumen verifikasi", 403)
+
+    if 'file' not in request.files:
+        return error("Harap upload file STR/SIP", 400)
+
+    file = request.files['file']
+    
+    # Validasi format file
+    allowed_ext = {'png', 'jpg', 'jpeg', 'pdf'}
+    if file.filename.split('.')[-1].lower() not in allowed_ext:
+        return error("Format file tidak diizinkan (hanya png, jpg, jpeg, pdf)", 400)
+
+    # Simpan file
+    filename = f"verification_{user.id}_{int(time.time())}_{file.filename}"
+    save_path = os.path.join(current_app.config['UPLOAD_FOLDER'], filename)
+    file.save(save_path)
+
+    user.verification_doc = f"static/uploads/{filename}"
+
+    db.session.commit()
+
+    return success({
+        "verification_doc": request.host_url + user.verification_doc
+    }, "Dokumen verifikasi berhasil diunggah")
+

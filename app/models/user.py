@@ -10,9 +10,10 @@ class User(db.Model, UserMixin):
 
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(256), nullable=False) # Perbesar panjang karakter jaga-jaga
-    full_name = db.Column(db.String(100), nullable=False)
-    role = db.Column(db.String(20), nullable=False) # 'PASIEN', 'DOKTER', 'ADMIN'
+    password_hash = db.Column(db.String(256), nullable=True) # Perbesar panjang karakter jaga-jaga
+    full_name = db.Column(db.String(100), nullable=True)
+
+    role = db.Column(db.String(20), nullable=True) # 'PASIEN', 'DOKTER', 'ADMIN'
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     # Kolom ini akan NULL (kosong) jika usernya adalah Pasien
@@ -31,6 +32,7 @@ class User(db.Model, UserMixin):
     balance = db.Column(db.Integer, default=0)
 
     verification_doc = db.Column(db.String(255), nullable=True)
+
 
     # Update Fungsi Set Password
     def set_password(self, password):
